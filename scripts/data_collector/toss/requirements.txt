@@ -1,0 +1,9 @@
+requests
+pandas
+loguru
+fire
+tqdm
+joblib
+finance-datareader
+pykrx
+opendartreader
