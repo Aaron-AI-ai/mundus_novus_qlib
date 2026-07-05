@@ -1,20 +1,24 @@
-# 한국 주식 데이터 수집기 (토스증권 Open API + KRX/DART)
+# 한국/미국 주식 데이터 수집기 (토스증권 Open API + KRX/DART/SEC)
 
-[토스증권 Open API](https://developers.tossinvest.com/docs)로 KRX 일봉을 수집해 qlib 포맷으로 변환·백테스트하고, pykrx(시가총액)·DART(재무제표)·토스 현재가 폴링(실시간)까지 붙이는 파이프라인.
+[토스증권 Open API](https://developers.tossinvest.com/docs)로 KRX·미국 일봉을 수집해 qlib 포맷으로 변환·백테스트하고, 시가총액(pykrx/yfinance)·재무제표(DART/SEC EDGAR)·토스 현재가 폴링(실시간)까지 붙이는 파이프라인.
 
 ## 파일 구성
 
-| 파일 | 역할 | 필요한 키 (환경변수) |
-|---|---|---|
-| `collector.py` | 토스 API 일봉(OHLCV, 수정주가) 수집 → 정규화 | `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET` |
-| `collect_marketcap.py` | pykrx 시가총액/상장주식수 → 일봉 CSV에 병합 | `KRX_ID`, `KRX_PW` ([data.krx.co.kr](https://data.krx.co.kr) 무료 가입) |
-| `collect_pit.py` | DART 분기/연간 재무제표 → qlib PIT 포맷 | `DART_API_KEY` ([opendart.fss.or.kr](https://opendart.fss.or.kr) 무료 발급) |
-| `live_quotes.py` | 토스 현재가 REST 폴링 (WebSocket 미공개) | `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET` |
-| `symbols_kr.txt` | 기본 종목 (KOSPI 대형주 24 + KODEX 200) | - |
-| `workflow_config_toss_lightgbm.yaml` | Alpha158 + LightGBM 백테스트 설정 | - |
-| `test_toss.py` | 오프라인 자체 검증 (`python test_toss.py`) | - |
+| 파일 | 시장 | 역할 | 필요한 키 (환경변수) |
+|---|---|---|---|
+| `collector.py` | KR+US | 토스 API 일봉(OHLCV, 수정주가) 수집 → 정규화 | `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET` |
+| `collect_marketcap.py` | KR | pykrx 시가총액/상장주식수 병합 | `KRX_ID`, `KRX_PW` ([data.krx.co.kr](https://data.krx.co.kr) 무료 가입) |
+| `collect_marketcap_us.py` | US | yfinance 시가총액/발행주식수 병합 | - |
+| `collect_pit.py` | KR | DART 분기/연간 재무제표 → qlib PIT | `DART_API_KEY` ([opendart.fss.or.kr](https://opendart.fss.or.kr) 무료 발급) |
+| `collect_pit_us.py` | US | SEC EDGAR 재무제표 → qlib PIT | `SEC_EDGAR_USER_AGENT` (키 아님, `"이름 이메일"` 형식 신원표시) |
+| `live_quotes.py` | KR+US | 토스 현재가 REST 폴링 (WebSocket 미공개) | `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET` |
+| `symbols_kr.txt` / `symbols_us.txt` | - | 기본 종목 (KR: 대형주 24+KODEX 200 / US: 메가캡 20+SPY) | - |
+| `workflow_config_toss_lightgbm.yaml` / `..._us_...yaml` | - | Alpha158 + LightGBM 백테스트 설정 | - |
+| `test_toss.py` | - | 오프라인 자체 검증 (`python test_toss.py`) | - |
 
-종목 지정(`--symbols`)은 모든 스크립트 공통: 미지정 시 `symbols_kr.txt`, `"005930,000660"` 콤마 문자열, 파일 경로, 또는 시장 키워드 `KOSPI`/`KOSDAQ`/`KRX`(FinanceDataReader로 전종목 자동 조회, KOSPI ≈ 945종목).
+종목 지정(`--symbols`)은 모든 스크립트 공통: 콤마 문자열(`"005930,AAPL"`), 파일 경로, 또는 시장 키워드 `KOSPI`/`KOSDAQ`/`KRX`/`NASDAQ`/`NYSE`/`S&P500`(FinanceDataReader로 전종목 자동 조회). 미지정 시 `symbols_kr.txt`.
+
+> **한국·미국 데이터는 반드시 별도 qlib 디렉토리에 dump할 것** (거래 캘린더가 다름): 아래 예시처럼 `kr_data` / `us_data` 분리.
 
 ## 1. 일봉 수집 → qlib 변환 → 백테스트
 
@@ -59,7 +63,34 @@ python ../../dump_pit.py dump --csv_path ~/.qlib/toss_data/pit --qlib_dir ~/.qli
 
 date=공시일(rcept_no) 기준의 진짜 point-in-time 데이터라 look-ahead bias가 없음. qlib에서 `P($$revenue_q)`, `P($$netincome_q)`, `P($$equity_q)` 등으로 조회 (필드: revenue, operatingprofit, netincome, assets, liabilities, equity). 분기 손익 항목은 DART 공시 그대로 누적(YTD) 값.
 
-## 4. 실시간 현재가 폴링
+## 4. 미국 시장 파이프라인
+
+한국과 동일한 흐름, qlib 디렉토리만 `us_data`로 분리:
+
+```bash
+# 일봉 수집 → 변환 (미국 티커는 자동으로 뉴욕 타임존 기준 날짜 처리)
+python collector.py download_data --source_dir ~/.qlib/toss_data_us/source --start 2018-01-01 --end 2026-07-01 --symbols symbols_us.txt
+python collector.py normalize_data --source_dir ~/.qlib/toss_data_us/source --normalize_dir ~/.qlib/toss_data_us/normalize
+
+# (선택) 시가총액: yfinance, 키 불필요
+python collect_marketcap_us.py merge --normalize_dir ~/.qlib/toss_data_us/normalize --start 2018-01-01
+
+# (선택) 재무제표: SEC EDGAR — 무료, User-Agent 신원표시만 필수
+export SEC_EDGAR_USER_AGENT="Your Name your@email.com"
+python collect_pit_us.py collect --save_dir ~/.qlib/toss_data_us/pit --symbols symbols_us.txt
+
+cd ../..
+python dump_bin.py dump_all --data_path ~/.qlib/toss_data_us/normalize --qlib_dir ~/.qlib/qlib_data/us_data --freq day --include_fields open,close,high,low,volume,change,factor
+python dump_pit.py dump --csv_path ~/.qlib/toss_data_us/pit --qlib_dir ~/.qlib/qlib_data/us_data --freq quarterly
+
+cd scripts/data_collector/toss && qrun workflow_config_toss_us_lightgbm.yaml   # 벤치마크 SPY
+```
+
+- 전종목: `--symbols "S&P500"`(503종목) / `NASDAQ` / `NYSE`.
+- yfinance 발행주식수 히스토리는 종목에 따라 몇 년치만 제공 → 그 이전 `mcap`은 NaN.
+- SEC EDGAR은 캘린더 frame이 붙은 정식 수치만 사용, date=공시일(point-in-time). SPY 같은 ETF는 재무제표가 없어 자동 스킵.
+
+## 5. 실시간 현재가 폴링
 
 ```bash
 python live_quotes.py poll --symbols "005930,000660" --interval_sec 1 --out quotes.csv

@@ -14,24 +14,30 @@ from data_collector.base import BaseCollector, BaseNormalize, BaseRun
 
 TOSS_BASE_URL = "https://openapi.tossinvest.com"
 MAX_CANDLE_COUNT = 200  # API max per request
-MARKET_KEYWORDS = ("KRX", "KOSPI", "KOSDAQ")
+KR_MARKET_KEYWORDS = ("KRX", "KOSPI", "KOSDAQ")
+US_MARKET_KEYWORDS = ("NASDAQ", "NYSE", "S&P500", "SP500")
 
 
 def parse_symbols(symbols=None) -> list:
-    """Resolve a symbols argument into a list of KRX codes.
+    """Resolve a symbols argument into a list of symbols (KRX codes or US tickers).
 
-    Accepts: None (-> symbols_kr.txt), a market keyword ("KOSPI"/"KOSDAQ"/"KRX",
-    resolved to the full listing via FinanceDataReader), a comma-separated
-    string, a list, or a path to a text file (one symbol per line, # comments).
+    Accepts: None (-> symbols_kr.txt), a market keyword ("KOSPI"/"KOSDAQ"/"KRX"/
+    "NASDAQ"/"NYSE"/"S&P500", resolved to the full listing via FinanceDataReader),
+    a comma-separated string, a list, or a path to a text file (one symbol per
+    line, # comments).
     """
     if symbols is None:
         symbols = CUR_DIR.joinpath("symbols_kr.txt")
-    if isinstance(symbols, str) and symbols.upper() in MARKET_KEYWORDS:
+    keyword = symbols.upper() if isinstance(symbols, str) else None
+    if keyword in KR_MARKET_KEYWORDS + US_MARKET_KEYWORDS:
         import FinanceDataReader as fdr
 
-        listing = fdr.StockListing(symbols.upper())
+        listing = fdr.StockListing("S&P500" if keyword == "SP500" else keyword)
         code_col = "Code" if "Code" in listing.columns else "Symbol"
-        return sorted(c for c in listing[code_col].astype(str) if len(c) == 6)
+        codes = listing[code_col].dropna().astype(str)
+        if keyword in KR_MARKET_KEYWORDS:
+            codes = [c for c in codes if len(c) == 6]
+        return sorted(set(codes))
     if isinstance(symbols, str) and Path(symbols).expanduser().exists():
         symbols = Path(symbols).expanduser()
     if isinstance(symbols, Path):
@@ -94,8 +100,13 @@ class TossSession:
         return resp.json()
 
 
-def candles_to_df(candles: list) -> pd.DataFrame:
-    """Map Toss candle records to qlib source columns."""
+def market_timezone(symbol: str) -> str:
+    """KRX codes are 6-digit numeric; anything else is a US ticker."""
+    return "Asia/Seoul" if symbol.isdigit() else "America/New_York"
+
+
+def candles_to_df(candles: list, tz: str = "Asia/Seoul") -> pd.DataFrame:
+    """Map Toss candle records to qlib source columns; trading date taken in `tz`."""
     df = pd.DataFrame(candles)
     df = df.rename(
         columns={
@@ -105,7 +116,7 @@ def candles_to_df(candles: list) -> pd.DataFrame:
             "closePrice": "close",
         }
     )
-    ts = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601").dt.tz_convert("Asia/Seoul")
+    ts = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601").dt.tz_convert(tz)
     df["date"] = ts.dt.strftime("%Y-%m-%d")
     return df[["date", "open", "high", "low", "close", "volume"]]
 
@@ -161,9 +172,10 @@ class TossCollector(BaseCollector):
         if interval != self.INTERVAL_1d:
             raise ValueError(f"cannot support {interval}")
 
+        tz = market_timezone(symbol)
         candles = []
         # `before` is an exclusive upper bound; page backwards via nextBefore
-        before = pd.Timestamp(end_datetime).tz_localize("Asia/Seoul").isoformat()
+        before = pd.Timestamp(end_datetime).tz_localize(tz).isoformat()
         while True:
             resp = self.session.get(
                 "/api/v1/candles",
@@ -179,14 +191,14 @@ class TossCollector(BaseCollector):
             next_before = result.get("nextBefore")
             if not page or not next_before:
                 break
-            if pd.Timestamp(next_before).tz_convert("Asia/Seoul").tz_localize(None) <= start_datetime:
+            if pd.Timestamp(next_before).tz_convert(tz).tz_localize(None) <= start_datetime:
                 break
             before = next_before
             self.sleep()
 
         if not candles:
             return pd.DataFrame()
-        df = candles_to_df(candles)
+        df = candles_to_df(candles, tz=tz)
         df = df[(df["date"] >= start_datetime.strftime("%Y-%m-%d")) & (df["date"] <= end_datetime.strftime("%Y-%m-%d"))]
         return df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
 

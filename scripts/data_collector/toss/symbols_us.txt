@@ -1,0 +1,21 @@
+SPY   # S&P 500 ETF (benchmark)
+AAPL  # Apple
+MSFT  # Microsoft
+NVDA  # NVIDIA
+GOOGL # Alphabet
+AMZN  # Amazon
+META  # Meta Platforms
+TSLA  # Tesla
+AVGO  # Broadcom
+LLY   # Eli Lilly
+JPM   # JPMorgan Chase
+V     # Visa
+XOM   # Exxon Mobil
+UNH   # UnitedHealth
+MA    # Mastercard
+JNJ   # Johnson & Johnson
+PG    # Procter & Gamble
+COST  # Costco
+HD    # Home Depot
+ORCL  # Oracle
+NFLX  # Netflix

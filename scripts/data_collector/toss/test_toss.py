@@ -66,6 +66,61 @@ def test_finstate_to_pit_rows():
     assert (out["period"] == 202401).all()
 
 
+def test_us_timezone():
+    from collector import market_timezone
+
+    assert market_timezone("005930") == "Asia/Seoul"
+    assert market_timezone("AAPL") == "America/New_York"
+    # US candle stamped midnight UTC must stay on the US trading date, not shift a day
+    candles = [{"timestamp": "2026-07-02T00:00:00Z", "openPrice": 1, "highPrice": 1,
+                "lowPrice": 1, "closePrice": 1, "volume": 1, "currency": "USD"}]
+    assert candles_to_df(candles, tz="America/New_York")["date"].iloc[0] == "2026-07-01"
+
+
+def test_facts_to_pit_rows():
+    from collect_pit_us import facts_to_pit_rows
+
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {
+                    "units": {
+                        "USD": [
+                            {"frame": "CY2024Q1", "val": 100.0, "filed": "2024-05-01"},
+                            {"frame": "CY2024Q1", "val": 101.0, "filed": "2024-08-01"},  # restated, must lose
+                            {"frame": "CY2024", "val": 400.0, "filed": "2025-02-01"},  # annual -> Q4
+                            {"val": 999.0, "filed": "2024-05-01"},  # no frame -> skipped
+                        ]
+                    }
+                },
+                "Assets": {
+                    "units": {"USD": [{"frame": "CY2024Q1I", "val": 5000.0, "filed": "2024-05-01"}]}
+                },
+            }
+        }
+    }
+    out = facts_to_pit_rows(facts)
+    assert len(out) == 3
+    ni_q1 = out[(out["field"] == "netincome") & (out["period"] == 202401)]
+    assert ni_q1["value"].iloc[0] == 100.0  # earliest filing wins
+    assert out[out["field"] == "netincome"]["period"].tolist() == [202401, 202404]
+    assert out[out["field"] == "assets"]["period"].iloc[0] == 202401
+
+
+def test_merge_us_marketcap_df():
+    from collect_marketcap_us import merge_us_marketcap_df
+
+    df = pd.DataFrame({"date": ["2026-07-01", "2026-07-02"], "close": [10.0, 11.0]})
+    shares = pd.Series(
+        [1000.0],
+        index=pd.to_datetime(["2026-06-15 12:00:00"]).tz_localize("America/New_York"),
+    )
+    raw_close = pd.Series([20.0, 22.0], index=pd.to_datetime(["2026-07-01", "2026-07-02"]))
+    out = merge_us_marketcap_df(df, shares, raw_close)
+    assert out["shares"].tolist() == [1000.0, 1000.0]  # sparse shares forward-filled
+    assert out["mcap"].tolist() == [20000.0, 22000.0]  # unadjusted close, not df close
+
+
 def test_merge_marketcap_df():
     from collect_marketcap import merge_marketcap_df
 
@@ -85,4 +140,7 @@ if __name__ == "__main__":
     test_parse_symbols()
     test_finstate_to_pit_rows()
     test_merge_marketcap_df()
+    test_us_timezone()
+    test_facts_to_pit_rows()
+    test_merge_us_marketcap_df()
     print("OK")
